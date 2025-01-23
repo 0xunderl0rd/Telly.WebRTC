@@ -31,6 +31,8 @@ function logError(error) {
 }
 
 function addMessageToTranscript(message, isUser = false, type = 'text') {
+    if (!message) return; // Don't add empty messages
+    
     // Create container for proper message flow
     const container = document.createElement('div');
     container.className = 'message-container';
@@ -45,7 +47,19 @@ function addMessageToTranscript(message, isUser = false, type = 'text') {
         // User or agent messages
         const messageDiv = document.createElement('div');
         messageDiv.className = `message ${isUser ? 'user-message' : 'agent-message'}`;
-        messageDiv.textContent = message;
+        
+        // Add role indicator
+        const roleSpan = document.createElement('span');
+        roleSpan.className = 'role-indicator';
+        roleSpan.textContent = isUser ? '🎤 You: ' : '🤖 Assistant: ';
+        roleSpan.style.fontWeight = 'bold';
+        messageDiv.appendChild(roleSpan);
+        
+        // Add message text
+        const textSpan = document.createElement('span');
+        textSpan.textContent = message;
+        messageDiv.appendChild(textSpan);
+        
         container.appendChild(messageDiv);
         
         // Add a clear div to maintain proper flow
@@ -209,7 +223,7 @@ function setupDataChannelHandlers() {
             type: 'response.create',
             response: {
                 modalities: ['text', 'audio'],
-                instructions: "Hello! How can I help you today?"
+                instructions: "Hi! I'm ready to chat. You can speak to me, and I'll respond with both voice and text."
             }
         });
     };
@@ -226,6 +240,7 @@ function setupDataChannelHandlers() {
     dataChannel.onmessage = (event) => {
         try {
             const message = JSON.parse(event.data);
+            console.log('Received message:', message); // Log all messages
             handleRealtimeEvent(message);
         } catch (error) {
             logError('Failed to parse message: ' + error);
@@ -242,7 +257,6 @@ function handleRealtimeEvent(event) {
             break;
             
         case 'session.updated':
-            // Just log this event
             console.log('Session updated:', event.session);
             break;
             
@@ -259,16 +273,23 @@ function handleRealtimeEvent(event) {
             break;
             
         case 'conversation.item.created':
-            console.log('Conversation item:', event.item);
+            console.log('Conversation item created:', event.item);
             if (event.item?.type === 'message') {
-                const message = event.item.message;
-                // Handle user's transcribed speech
-                if (message?.role === 'user' && message?.content?.type === 'text') {
-                    addMessageToTranscript(message.content.text, true);
+                if (event.item?.message?.role === 'user' && event.item?.message?.content?.type === 'text') {
+                    // User's transcribed speech
+                    console.log('User speech transcript:', event.item.message.content.text);
+                    addMessageToTranscript(event.item.message.content.text, true);
                 }
-                // Handle assistant's text responses
-                else if (message?.role === 'assistant' && message?.content?.type === 'text') {
-                    addMessageToTranscript(message.content.text, false);
+                else if (event.item?.message?.role === 'assistant' && event.item?.message?.content?.type === 'text') {
+                    // Assistant's text response
+                    console.log('Assistant response:', event.item.message.content.text);
+                    addMessageToTranscript(event.item.message.content.text, false);
+                }
+            } else if (event.item?.type === 'text') {
+                // Direct text content
+                console.log('Direct text content:', event.item.text);
+                if (event.item.text) {
+                    addMessageToTranscript(event.item.text, event.item.role === 'user');
                 }
             }
             break;
@@ -282,6 +303,7 @@ function handleRealtimeEvent(event) {
             break;
             
         case 'text.created':
+            console.log('Text created:', event.text);
             if (event.text?.value) {
                 addMessageToTranscript(event.text.value, false);
             }
