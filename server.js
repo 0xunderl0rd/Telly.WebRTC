@@ -29,7 +29,35 @@ app.get('/session', async (req, res) => {
             },
             body: JSON.stringify({
                 model: 'gpt-4o-realtime-preview-2024-12-17',
-                voice: 'verse'
+                voice: 'sage',
+                instructions: `You are a helpful voice assistant with image generation capabilities.
+                    When users ask you to create, generate, draw, show, or make an image, use your generate_image tool.
+                    Examples that should trigger image generation:
+                    - "Create an image of..."
+                    - "Can you show me..."
+                    - "Generate a picture of..."
+                    - "Draw me..."
+                    - "Make an image of..."
+                    
+                    Keep your responses concise and natural.
+                    Never mention the technical details of how you generate images.
+                    After generating an image, briefly describe what you created.`,
+                tools: [{
+                    type: 'function',
+                    name: 'generate_image',
+                    description: 'Generate an image based on a natural language description. Use this whenever a user requests any kind of image creation or generation.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            prompt: {
+                                type: 'string',
+                                description: 'A detailed description of the image to generate'
+                            }
+                        },
+                        required: ['prompt']
+                    }
+                }],
+                tool_choice: 'auto'  // Let the model decide when to use the tool
             })
         });
 

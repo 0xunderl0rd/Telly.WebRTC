@@ -15,7 +15,15 @@ let currentAssistantMessage = '';
 let lastMessageRole = null;
 let messageBuffer = {
     text: '',
-    timeout: null
+    timeout: null,
+    functionCall: null  // Add function call tracking
+};
+
+// Add image state tracking
+let lastImageContext = {
+    prompt: null,
+    url: null,
+    timestamp: null
 };
 
 // Constants
@@ -231,12 +239,11 @@ function setupDataChannelHandlers() {
         updateStatus('Connected');
         addMessageToTranscript('Ready to chat', false, 'status');
         
-        // Send initial prompt
+        // Send initial prompt with detailed instructions
         sendEvent({
             type: 'response.create',
             response: {
                 modalities: ['text', 'audio'],
-                instructions: "Hi! I'm ready to chat. You can speak to me, and I'll respond with both voice and text."
             }
         });
     };
@@ -395,8 +402,63 @@ function handleRealtimeEvent(event) {
             addMessageToTranscript(`Error: ${event.error.message || 'Unknown error'}`, false, 'status');
             break;
             
+        case 'rate_limits.updated':
+            // Just log rate limits, no action needed
+            console.log('Rate limits updated:', event.rate_limits);
+            break;
+
+        case 'response.function_call_arguments.delta':
+            console.log('Function call delta received:', {
+                call_id: event.call_id,
+                delta: event.delta,
+                current_buffer: messageBuffer.functionCall?.arguments
+            });
+            // Accumulate function call arguments
+            if (!messageBuffer.functionCall) {
+                messageBuffer.functionCall = {
+                    name: event.call_id,
+                    arguments: ''
+                };
+            }
+            if (event.delta) {
+                messageBuffer.functionCall.arguments += event.delta;
+            }
+            break;
+
+        case 'response.function_call_arguments.done':
+            console.log('Function call arguments completed:', {
+                name: event.name,
+                raw_args: event.arguments
+            });
+            
+            try {
+                // Parse the arguments directly from the event
+                const args = JSON.parse(event.arguments);
+                console.log('Parsed function arguments:', args);
+                
+                if (event.name === 'generate_image' && args.prompt) {
+                    generateImage(args.prompt);
+                }
+            } catch (error) {
+                console.error('Error parsing function arguments:', error);
+                console.log('Raw arguments:', event.arguments);
+            }
+            
+            // Clear the function call buffer
+            messageBuffer.functionCall = null;
+            break;
+
+        case 'response.output_item.done':
+            if (event.item?.type === 'function_call') {
+                console.log('Function call item completed:', event.item);
+                // Function call has been processed, no additional action needed
+            }
+            break;
+
         default:
+            // Log unhandled event types but don't show error
             console.log('Unhandled event type:', event.type, event);
+            break;
     }
 }
 
