@@ -31,16 +31,30 @@ function logError(error) {
 }
 
 function addMessageToTranscript(message, isUser = false, type = 'text') {
-    const messageDiv = document.createElement('div');
-    messageDiv.className = `message ${isUser ? 'user-message' : 'agent-message'}`;
+    // Create container for proper message flow
+    const container = document.createElement('div');
+    container.className = 'message-container';
     
     if (type === 'status') {
-        messageDiv.style.fontStyle = 'italic';
-        messageDiv.style.color = '#666';
+        // System status messages
+        const messageDiv = document.createElement('div');
+        messageDiv.className = 'system-message';
+        messageDiv.textContent = message;
+        container.appendChild(messageDiv);
+    } else {
+        // User or agent messages
+        const messageDiv = document.createElement('div');
+        messageDiv.className = `message ${isUser ? 'user-message' : 'agent-message'}`;
+        messageDiv.textContent = message;
+        container.appendChild(messageDiv);
+        
+        // Add a clear div to maintain proper flow
+        const clearDiv = document.createElement('div');
+        clearDiv.className = 'clear-both';
+        container.appendChild(clearDiv);
     }
     
-    messageDiv.textContent = message;
-    transcript.appendChild(messageDiv);
+    transcript.appendChild(container);
     transcript.scrollTop = transcript.scrollHeight;
 }
 
@@ -187,21 +201,21 @@ async function setupWebRTC() {
 
 function setupDataChannelHandlers() {
     dataChannel.onopen = () => {
-        updateStatus('Data channel open');
-        addMessageToTranscript('Connection established', false, 'status');
+        updateStatus('Connected');
+        addMessageToTranscript('Ready to chat', false, 'status');
         
-        // Send initial prompt after data channel is open
+        // Send initial prompt
         sendEvent({
             type: 'response.create',
             response: {
                 modalities: ['text', 'audio'],
-                instructions: "Hello! I'm your AI assistant. You can speak to me, and I'll respond with both voice and text. I can also analyze images if you upload them. What would you like to discuss?"
+                instructions: "Hello! How can I help you today?"
             }
         });
     };
 
     dataChannel.onclose = () => {
-        updateStatus('Data channel closed');
+        updateStatus('Disconnected');
         addMessageToTranscript('Connection closed', false, 'status');
     };
 
@@ -224,11 +238,11 @@ function handleRealtimeEvent(event) {
     
     switch (event.type) {
         case 'session.created':
-            console.log('Session:', event.session);
-            addMessageToTranscript(`Session created with model: ${event.session.model}`, false, 'status');
+            addMessageToTranscript('Session started', false, 'status');
             break;
             
         case 'session.updated':
+            // Just log this event
             console.log('Session updated:', event.session);
             break;
             
@@ -246,11 +260,15 @@ function handleRealtimeEvent(event) {
             
         case 'conversation.item.created':
             console.log('Conversation item:', event.item);
-            if (event.item?.type === 'message' && event.item?.message?.content) {
-                // Handle user message transcription
-                const content = event.item.message.content;
-                if (content.type === 'text' && content.text) {
-                    addMessageToTranscript(`🎤 ${content.text}`, true);
+            if (event.item?.type === 'message') {
+                const message = event.item.message;
+                // Handle user's transcribed speech
+                if (message?.role === 'user' && message?.content?.type === 'text') {
+                    addMessageToTranscript(message.content.text, true);
+                }
+                // Handle assistant's text responses
+                else if (message?.role === 'assistant' && message?.content?.type === 'text') {
+                    addMessageToTranscript(message.content.text, false);
                 }
             }
             break;
@@ -265,12 +283,14 @@ function handleRealtimeEvent(event) {
             
         case 'text.created':
             if (event.text?.value) {
-                addMessageToTranscript(`🤖 ${event.text.value}`, false);
+                addMessageToTranscript(event.text.value, false);
             }
             break;
 
         case 'error':
+            console.error('Error event:', event.error);
             logError(event.error);
+            addMessageToTranscript(`Error: ${event.error.message || 'Unknown error'}`, false, 'status');
             break;
             
         default:
