@@ -11,6 +11,12 @@ let audioStream = null;
 let dataChannel = null;
 let audioContext = null;
 let audioMeter = null;
+let currentAssistantMessage = '';
+let lastMessageRole = null;
+let messageBuffer = {
+    text: '',
+    timeout: null
+};
 
 // Constants
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB in bytes
@@ -146,7 +152,7 @@ async function setupWebRTC() {
         // Set up audio playback with specific settings
         const audioEl = document.createElement('audio');
         audioEl.autoplay = true;
-        audioEl.volume = 1.0; // Ensure volume is at maximum
+        audioEl.volume = 1.0;
         document.body.appendChild(audioEl);
         
         // Handle incoming audio stream
@@ -180,13 +186,20 @@ async function setupWebRTC() {
         await peerConnection.setLocalDescription(offer);
         addMessageToTranscript('Local description set', false, 'status');
 
-        // Send offer to OpenAI
+        // Send offer to OpenAI with input audio transcription enabled
         const sdpResponse = await fetch(`${OPENAI_REALTIME_URL}?model=${MODEL}`, {
             method: 'POST',
             body: offer.sdp,
             headers: {
                 'Authorization': `Bearer ${ephemeralKey}`,
-                'Content-Type': 'application/sdp'
+                'Content-Type': 'application/sdp',
+                'OpenAI-Beta': 'realtime'
+            },
+            // Add input audio transcription configuration
+            query: {
+                input_audio_transcription: {
+                    model: 'whisper-1'
+                }
             }
         });
 
@@ -248,6 +261,17 @@ function setupDataChannelHandlers() {
     };
 }
 
+function flushMessageBuffer() {
+    if (messageBuffer.text.trim()) {
+        addMessageToTranscript(messageBuffer.text.trim(), false);
+        messageBuffer.text = '';
+    }
+    if (messageBuffer.timeout) {
+        clearTimeout(messageBuffer.timeout);
+        messageBuffer.timeout = null;
+    }
+}
+
 function handleRealtimeEvent(event) {
     console.log('Received event:', event);
     
@@ -260,8 +284,17 @@ function handleRealtimeEvent(event) {
             console.log('Session updated:', event.session);
             break;
             
+        case 'input_audio_buffer.transcription':
+            // Handle Whisper transcription events
+            console.log('Transcription received:', event.transcription);
+            if (event.transcription?.text) {
+                addMessageToTranscript(event.transcription.text, true);
+            }
+            break;
+            
         case 'input_audio_buffer.speech_started':
             updateStatus('Speaking...');
+            lastMessageRole = 'user';
             break;
             
         case 'input_audio_buffer.speech_stopped':
@@ -275,40 +308,87 @@ function handleRealtimeEvent(event) {
         case 'conversation.item.created':
             console.log('Conversation item created:', event.item);
             if (event.item?.type === 'message') {
-                if (event.item?.message?.role === 'user' && event.item?.message?.content?.type === 'text') {
-                    // User's transcribed speech
-                    console.log('User speech transcript:', event.item.message.content.text);
-                    addMessageToTranscript(event.item.message.content.text, true);
+                // Reset message buffer when switching speakers
+                if (lastMessageRole !== event.item.role) {
+                    flushMessageBuffer();
+                    lastMessageRole = event.item.role;
                 }
-                else if (event.item?.message?.role === 'assistant' && event.item?.message?.content?.type === 'text') {
-                    // Assistant's text response
-                    console.log('Assistant response:', event.item.message.content.text);
-                    addMessageToTranscript(event.item.message.content.text, false);
-                }
-            } else if (event.item?.type === 'text') {
-                // Direct text content
-                console.log('Direct text content:', event.item.text);
-                if (event.item.text) {
-                    addMessageToTranscript(event.item.text, event.item.role === 'user');
+
+                // Handle user transcripts
+                if (event.item.role === 'user') {
+                    // Check all content parts for text
+                    const textContent = event.item.content?.find(c => c.type === 'text');
+                    if (textContent?.text) {
+                        console.log('User speech transcript:', textContent.text);
+                        addMessageToTranscript(textContent.text, true);
+                    }
                 }
             }
             break;
             
         case 'response.created':
             updateStatus('Assistant is responding...');
+            messageBuffer.text = '';
+            lastMessageRole = 'assistant'; // Track that assistant is speaking
+            if (messageBuffer.timeout) {
+                clearTimeout(messageBuffer.timeout);
+                messageBuffer.timeout = null;
+            }
             break;
             
         case 'response.done':
             updateStatus('Connected');
+            flushMessageBuffer();
             break;
-            
-        case 'text.created':
-            console.log('Text created:', event.text);
-            if (event.text?.value) {
-                addMessageToTranscript(event.text.value, false);
+
+        case 'response.audio_transcript.delta':
+            if (event.delta) {
+                messageBuffer.text += event.delta;
+                
+                // Clear any existing timeout
+                if (messageBuffer.timeout) {
+                    clearTimeout(messageBuffer.timeout);
+                }
+                
+                // Check for natural breakpoints
+                const hasNaturalBreak = /[.!?]\s*$/.test(messageBuffer.text) || 
+                                      /[,;:]\s*$/.test(messageBuffer.text) ||
+                                      messageBuffer.text.length > 100;
+                
+                if (hasNaturalBreak) {
+                    flushMessageBuffer();
+                } else {
+                    // Set a timeout to flush the buffer if no new content arrives
+                    messageBuffer.timeout = setTimeout(() => {
+                        flushMessageBuffer();
+                    }, 1000); // Wait 1 second before flushing incomplete phrases
+                }
             }
             break;
 
+        case 'response.output_item.added':
+            console.log('Output item added:', event.item);
+            if (event.item?.type === 'message' && event.item?.content?.[0]?.type === 'text') {
+                const text = event.item.content[0].text;
+                if (event.item.role === 'user') {
+                    addMessageToTranscript(text, true);
+                }
+            }
+            break;
+
+        case 'response.content_part.added':
+            console.log('Content part added:', event.part);
+            if (event.part?.type === 'text' && event.part?.text) {
+                addMessageToTranscript(event.part.text, false);
+            }
+            break;
+
+        case 'response.audio.done':
+            flushMessageBuffer();
+            console.log('Audio response completed');
+            updateStatus('Connected');
+            break;
+            
         case 'error':
             console.error('Error event:', event.error);
             logError(event.error);
