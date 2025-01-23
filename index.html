@@ -45,12 +45,17 @@
             margin: 5px;
             cursor: pointer;
         }
+        .audio-controls {
+            margin: 10px 0;
+        }
     </style>
 </head>
 <body>
     <h1>Voice Chat with OpenAI</h1>
     <div id="status">Status: Disconnected</div>
-    <button id="connectBtn">Connect</button>
+    <div class="audio-controls">
+        <button id="connectBtn">Connect</button>
+    </div>
     <div id="transcript"></div>
     <input type="file" id="imageUpload" accept="image/*">
     

@@ -8,9 +8,13 @@ const imageUpload = document.getElementById('imageUpload');
 let isConnected = false;
 let peerConnection = null;
 let audioStream = null;
+let dataChannel = null;
 
 // Constants
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB in bytes
+const SERVER_URL = 'http://localhost:3000';
+const OPENAI_REALTIME_URL = 'https://api.openai.com/v1/realtime';
+const MODEL = 'gpt-4o-realtime-preview-2024-12-17';
 
 // Utility Functions
 function updateStatus(message) {
@@ -34,43 +38,133 @@ function addMessageToTranscript(message, isUser = false) {
 // WebRTC Setup
 async function setupWebRTC() {
     try {
+        updateStatus('Initializing...');
+
+        // Get ephemeral token from our server
+        const tokenResponse = await fetch(`${SERVER_URL}/session`);
+        if (!tokenResponse.ok) {
+            throw new Error('Failed to get session token');
+        }
+        const sessionData = await tokenResponse.json();
+        const ephemeralKey = sessionData.client_secret.value;
+
         // Request microphone access
         audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        updateStatus('Microphone access granted');
+
+        // Create peer connection
+        peerConnection = new RTCPeerConnection({
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ]
+        });
+
+        // Set up audio playback
+        const audioEl = document.createElement('audio');
+        audioEl.autoplay = true;
+        document.body.appendChild(audioEl);
         
-        // Create and configure peer connection
-        const configuration = { 
-            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        peerConnection.ontrack = (event) => {
+            audioEl.srcObject = event.streams[0];
         };
-        
-        peerConnection = new RTCPeerConnection(configuration);
-        
-        // Add audio track to peer connection
+
+        // Add local audio track
         audioStream.getTracks().forEach(track => {
             peerConnection.addTrack(track, audioStream);
         });
 
-        // Handle connection state changes
-        peerConnection.onconnectionstatechange = () => {
-            updateStatus(`Connection: ${peerConnection.connectionState}`);
-            if (peerConnection.connectionState === 'connected') {
-                isConnected = true;
-                connectBtn.textContent = 'Disconnect';
-            }
-        };
+        // Create data channel for events
+        dataChannel = peerConnection.createDataChannel('oai-events');
+        setupDataChannelHandlers();
 
-        // Handle ICE candidate events
-        peerConnection.onicecandidate = event => {
-            if (event.candidate) {
-                // TODO: Send ICE candidate to OpenAI server
-                console.log('New ICE candidate:', event.candidate);
-            }
-        };
+        // Create and set local description
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
 
-        // TODO: Implement signaling with OpenAI server
-        
+        // Send offer to OpenAI
+        const sdpResponse = await fetch(`${OPENAI_REALTIME_URL}?model=${MODEL}`, {
+            method: 'POST',
+            body: offer.sdp,
+            headers: {
+                'Authorization': `Bearer ${ephemeralKey}`,
+                'Content-Type': 'application/sdp'
+            }
+        });
+
+        if (!sdpResponse.ok) {
+            throw new Error('Failed to get SDP answer');
+        }
+
+        // Set remote description
+        const answer = {
+            type: 'answer',
+            sdp: await sdpResponse.text()
+        };
+        await peerConnection.setRemoteDescription(answer);
+
+        // Update UI state
+        isConnected = true;
+        connectBtn.textContent = 'Disconnect';
+        updateStatus('Connected');
+
+        // Send initial prompt
+        sendEvent({
+            type: 'response.create',
+            response: {
+                modalities: ['text', 'audio'],
+                instructions: 'Hello! I am ready to chat.'
+            }
+        });
+
     } catch (error) {
         logError(error);
         cleanupWebRTC();
+    }
+}
+
+function setupDataChannelHandlers() {
+    dataChannel.onopen = () => {
+        updateStatus('Data channel open');
+    };
+
+    dataChannel.onclose = () => {
+        updateStatus('Data channel closed');
+    };
+
+    dataChannel.onerror = (error) => {
+        logError('Data channel error: ' + error);
+    };
+
+    dataChannel.onmessage = (event) => {
+        try {
+            const message = JSON.parse(event.data);
+            handleRealtimeEvent(message);
+        } catch (error) {
+            logError('Failed to parse message: ' + error);
+        }
+    };
+}
+
+function handleRealtimeEvent(event) {
+    console.log('Received event:', event);
+    switch (event.type) {
+        case 'text.created':
+            addMessageToTranscript(event.text.value, false);
+            break;
+        case 'error':
+            logError(event.error);
+            break;
+        default:
+            console.log('Unhandled event type:', event.type);
+    }
+}
+
+function sendEvent(event) {
+    if (dataChannel && dataChannel.readyState === 'open') {
+        dataChannel.send(JSON.stringify(event));
+    } else {
+        logError('Data channel not ready');
     }
 }
 
@@ -79,12 +173,17 @@ function cleanupWebRTC() {
         audioStream.getTracks().forEach(track => track.stop());
         audioStream = null;
     }
-    
+
     if (peerConnection) {
         peerConnection.close();
         peerConnection = null;
     }
-    
+
+    if (dataChannel) {
+        dataChannel.close();
+        dataChannel = null;
+    }
+
     isConnected = false;
     connectBtn.textContent = 'Connect';
     updateStatus('Disconnected');
@@ -101,7 +200,6 @@ imageUpload.addEventListener('change', async (event) => {
     }
 
     try {
-        // TODO: Implement image processing and sending to OpenAI
         const reader = new FileReader();
         reader.onload = () => {
             const img = document.createElement('img');
@@ -110,6 +208,16 @@ imageUpload.addEventListener('change', async (event) => {
             messageDiv.className = 'message user-message';
             messageDiv.appendChild(img);
             transcript.appendChild(messageDiv);
+
+            // Send image analysis request through data channel
+            sendEvent({
+                type: 'response.create',
+                response: {
+                    modalities: ['text', 'audio'],
+                    instructions: 'Please analyze this image.',
+                    image: reader.result
+                }
+            });
         };
         reader.readAsDataURL(file);
     } catch (error) {
