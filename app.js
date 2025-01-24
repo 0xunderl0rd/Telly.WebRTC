@@ -3,6 +3,7 @@ const connectBtn = document.getElementById('connectBtn');
 const transcript = document.getElementById('transcript');
 const status = document.getElementById('status');
 const imageUpload = document.getElementById('imageUpload');
+const voiceSelect = document.getElementById('voiceSelect');
 
 // State
 let isConnected = false;
@@ -13,6 +14,7 @@ let audioContext = null;
 let audioMeter = null;
 let currentAssistantMessage = '';
 let lastMessageRole = null;
+let selectedVoice = 'sage'; // Default voice
 let messageBuffer = {
     text: '',
     timeout: null,
@@ -31,6 +33,14 @@ const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB in bytes
 const SERVER_URL = 'http://localhost:3000';
 const OPENAI_REALTIME_URL = 'https://api.openai.com/v1/realtime';
 const MODEL = 'gpt-4o-realtime-preview-2024-12-17';
+
+// Add voice selection handler
+voiceSelect.addEventListener('change', (event) => {
+    selectedVoice = event.target.value;
+    if (isConnected) {
+        addMessageToTranscript(`Switching to ${selectedVoice} voice requires reconnecting...`, false, 'status');
+    }
+});
 
 // Utility Functions
 function updateStatus(message, isError = false) {
@@ -127,10 +137,11 @@ async function setupWebRTC() {
         updateStatus('Initializing...');
         addMessageToTranscript('Initializing connection...', false, 'status');
 
-        // Get ephemeral token from our server
-        const tokenResponse = await fetch(`${SERVER_URL}/session`);
+        // Get ephemeral token from our server with selected voice
+        const tokenResponse = await fetch(`${SERVER_URL}/session?voice=${encodeURIComponent(selectedVoice)}`);
         if (!tokenResponse.ok) {
-            throw new Error('Failed to get session token');
+            const errorData = await tokenResponse.json();
+            throw new Error(`Failed to get session token: ${errorData.error || tokenResponse.statusText}`);
         }
         const sessionData = await tokenResponse.json();
         const ephemeralKey = sessionData.client_secret.value;
@@ -194,7 +205,7 @@ async function setupWebRTC() {
         await peerConnection.setLocalDescription(offer);
         addMessageToTranscript('Local description set', false, 'status');
 
-        // Send offer to OpenAI with input audio transcription enabled
+        // Send offer to OpenAI with input audio transcription enabled and selected voice
         const sdpResponse = await fetch(`${OPENAI_REALTIME_URL}?model=${MODEL}`, {
             method: 'POST',
             body: offer.sdp,
@@ -203,11 +214,12 @@ async function setupWebRTC() {
                 'Content-Type': 'application/sdp',
                 'OpenAI-Beta': 'realtime'
             },
-            // Add input audio transcription configuration
+            // Add input audio transcription configuration and voice selection
             query: {
                 input_audio_transcription: {
                     model: 'whisper-1'
-                }
+                },
+                voice: selectedVoice
             }
         });
 
@@ -226,7 +238,7 @@ async function setupWebRTC() {
         // Update UI state
         isConnected = true;
         connectBtn.textContent = 'Disconnect';
-        updateStatus('Connected');
+        updateStatus(`Connected (${selectedVoice})`);
 
     } catch (error) {
         logError(error);

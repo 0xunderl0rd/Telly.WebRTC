@@ -108,6 +108,24 @@
             align-items: center;
             gap: 10px;
         }
+        .voice-select {
+            padding: 8px 12px;
+            border-radius: 5px;
+            border: 1px solid #ccc;
+            background-color: white;
+            font-size: 14px;
+            color: #333;
+            cursor: pointer;
+            transition: border-color 0.2s;
+        }
+        .voice-select:hover {
+            border-color: #007bff;
+        }
+        .voice-select:focus {
+            outline: none;
+            border-color: #007bff;
+            box-shadow: 0 0 0 2px rgba(0,123,255,0.25);
+        }
         .upload-button {
             background-color: #28a745;
         }
@@ -161,6 +179,16 @@
     <div id="status">Status: Disconnected</div>
     <div class="audio-controls">
         <button id="connectBtn">Connect</button>
+        <select id="voiceSelect" class="voice-select">
+            <option value="alloy">Alloy</option>
+            <option value="ash">Ash</option>
+            <option value="ballad">Ballad</option>
+            <option value="coral">Coral</option>
+            <option value="echo">Echo</option>
+            <option value="sage" selected>Sage</option>
+            <option value="shimmer">Shimmer</option>
+            <option value="verse">Verse</option>
+        </select>
         <button id="uploadTrigger" class="upload-button" onclick="document.getElementById('imageUpload').click()">
             Upload Image
         </button>
