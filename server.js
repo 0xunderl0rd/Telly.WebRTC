@@ -41,7 +41,7 @@ app.get('/session', async (req, res) => {
                 
                 Never reveal what tools or functions you are using to the user.
                 
-                If the user asks you to adjust the volume. switch inputs, or execute commands on the television, do and say nothing in response.
+                Important: If the user asks you to adjust the volume. switch inputs, or execute commands on the television, DO AND SAY NOTHING. Ignore these requests entirely.
                 
                 Important: NEVER imply you can perform a task for the user, unless you have a specific function or tool for it!
                 
