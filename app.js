@@ -344,12 +344,18 @@ function handleRealtimeEvent(event) {
             break;
             
         case 'response.done':
-            updateStatus('Connected');
+            // Final cleanup of any remaining text
             flushMessageBuffer();
+            updateStatus('Connected');
             break;
 
         case 'response.audio_transcript.delta':
             if (event.delta) {
+                // Reset function call state to ensure clean transcript handling
+                if (messageBuffer.functionCall) {
+                    messageBuffer.functionCall = null;
+                }
+                
                 messageBuffer.text += event.delta;
                 
                 // Clear any existing timeout
@@ -368,7 +374,7 @@ function handleRealtimeEvent(event) {
                     // Set a timeout to flush the buffer if no new content arrives
                     messageBuffer.timeout = setTimeout(() => {
                         flushMessageBuffer();
-                    }, 1000); // Wait 1 second before flushing incomplete phrases
+                    }, 1000);
                 }
             }
             break;
@@ -444,14 +450,16 @@ function handleRealtimeEvent(event) {
                 console.log('Raw arguments:', event.arguments);
             }
             
-            // Clear the function call buffer
+            // Clear only the function call buffer, preserve other message state
             messageBuffer.functionCall = null;
             break;
 
         case 'response.output_item.done':
             if (event.item?.type === 'function_call') {
                 console.log('Function call item completed:', event.item);
-                // Function call has been processed, no additional action needed
+            } else {
+                // Ensure any remaining text is flushed
+                flushMessageBuffer();
             }
             break;
 
@@ -543,4 +551,65 @@ connectBtn.addEventListener('click', async () => {
 });
 
 // Handle page unload
-window.addEventListener('beforeunload', cleanupWebRTC); 
+window.addEventListener('beforeunload', cleanupWebRTC);
+
+// Image Generation
+async function generateImage(prompt) {
+    try {
+        // Add loading indicator
+        const loadingContainer = document.createElement('div');
+        loadingContainer.className = 'message agent-message';
+        loadingContainer.innerHTML = `
+            <div class="loading-container">
+                <div class="loading-spinner"></div>
+                <div class="loading-text">Generating image: ${prompt}</div>
+            </div>
+        `;
+        transcript.appendChild(loadingContainer);
+        transcript.scrollTop = transcript.scrollHeight;
+
+        // Make API call to our server endpoint
+        const response = await fetch(`${SERVER_URL}/generate-image`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ prompt })
+        });
+
+        if (!response.ok) {
+            throw new Error('Failed to generate image');
+        }
+
+        const data = await response.json();
+
+        // Remove loading indicator
+        loadingContainer.remove();
+
+        // Create image container
+        const imageContainer = document.createElement('div');
+        imageContainer.className = 'message agent-message';
+        
+        // Create and add image
+        const img = document.createElement('img');
+        img.src = data.url;
+        img.alt = prompt;
+        img.className = 'generated-image';
+        imageContainer.appendChild(img);
+        
+        // Add to transcript
+        transcript.appendChild(imageContainer);
+        transcript.scrollTop = transcript.scrollHeight;
+
+        // Update last image context
+        lastImageContext = {
+            prompt,
+            url: data.url,
+            timestamp: Date.now()
+        };
+
+    } catch (error) {
+        console.error('Error generating image:', error);
+        addMessageToTranscript('Failed to generate image: ' + error.message, false, 'status');
+    }
+} 
