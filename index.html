@@ -142,20 +142,21 @@
         .loading-container {
             display: flex;
             align-items: center;
+            justify-content: center;
+            margin: 10px auto;
             gap: 10px;
-            padding: 10px;
         }
         .loading-spinner {
             width: 20px;
             height: 20px;
-            border: 2px solid #f3f3f3;
-            border-top: 2px solid #3498db;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #2196F3;
             border-radius: 50%;
             animation: spin 1s linear infinite;
         }
         .loading-text {
             color: #666;
-            font-size: 14px;
+            font-style: italic;
         }
         .generated-image {
             max-width: 100%;
@@ -271,6 +272,20 @@
         }
         .reset-button:hover {
             background-color: #5a6268;
+        }
+        .citations {
+            margin: 8px 20%;
+            font-size: 0.9em;
+            color: #666;
+        }
+        .citations a {
+            display: block;
+            color: #2196F3;
+            text-decoration: none;
+            margin: 4px 0;
+        }
+        .citations a:hover {
+            text-decoration: underline;
         }
     </style>
 </head>

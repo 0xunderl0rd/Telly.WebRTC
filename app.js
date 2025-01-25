@@ -196,6 +196,20 @@ function flushMessageBuffer() {
 function handleRealtimeEvent(event) {
     console.log('Received event:', event);
     
+    // Handle errors first
+    if (event.type === 'error') {
+        console.error('Error event:', event.error);
+        // Don't throw errors, just log them
+        logError(event.error);
+        
+        // Only attempt reconnection for connection-related errors
+        if (event.error.type === 'connection_error' || event.error.code === 'connection_closed') {
+            addMessageToTranscript('Connection error occurred. Attempting to reconnect...', false, 'status');
+            return;
+        }
+        return;
+    }
+    
     switch (event.type) {
         case 'session.created':
             addMessageToTranscript('Session started', false, 'status');
@@ -323,12 +337,6 @@ function handleRealtimeEvent(event) {
             updateStatus('Connected');
             break;
             
-        case 'error':
-            console.error('Error event:', event.error);
-            logError(event.error);
-            addMessageToTranscript(`Error: ${event.error.message || 'Unknown error'}`, false, 'status');
-            break;
-            
         case 'rate_limits.updated':
             // Just log rate limits, no action needed
             console.log('Rate limits updated:', event.rate_limits);
@@ -365,10 +373,15 @@ function handleRealtimeEvent(event) {
                 
                 if (event.name === 'generate_image' && args.prompt) {
                     generateImage(args.prompt);
+                } else if (event.name === 'search_web') {
+                    handleWebSearch(args).catch(error => {
+                        console.error('Error in web search:', error);
+                        addMessageToTranscript('Failed to complete the web search. Please try again.', false, 'status');
+                    });
                 }
             } catch (error) {
                 console.error('Error parsing function arguments:', error);
-                console.log('Raw arguments:', event.arguments);
+                addMessageToTranscript('Failed to process the request. Please try again.', false, 'status');
             }
             
             // Clear only the function call buffer, preserve other message state
@@ -384,8 +397,12 @@ function handleRealtimeEvent(event) {
             }
             break;
 
+        case 'output_audio_buffer.audio_stopped':
+            // Silently handle audio stopped event
+            break;
+
         default:
-            // Log unhandled event types but don't show error
+            // Just log unhandled event types without showing error
             console.log('Unhandled event type:', event.type, event);
             break;
     }
@@ -694,32 +711,144 @@ function setupDataChannelHandlers() {
     dataChannel.onopen = () => {
         updateStatus('Connected');
         addMessageToTranscript('Ready to chat', false, 'status');
-        
-        // Send initial prompt with detailed instructions
-        sendEvent({
-            type: 'response.create',
-            response: {
-                modalities: ['text', 'audio'],
-            }
-        });
     };
 
     dataChannel.onclose = () => {
         updateStatus('Disconnected');
         addMessageToTranscript('Connection closed', false, 'status');
+        // Attempt to reconnect if not intentionally disconnected
+        if (isConnected) {
+            setTimeout(() => {
+                console.log('Attempting to reconnect...');
+                cleanupWebRTC();
+                setupWebRTC();
+            }, 2000);
+        }
     };
 
     dataChannel.onerror = (error) => {
-        logError('Data channel error: ' + error);
+        console.error('Data channel error:', error);
+        logError('Connection error occurred');
+        
+        // Only attempt recovery for connection-related errors
+        if (isConnected && 
+            dataChannel.readyState === 'closed' && 
+            error.error?.message?.includes('connection')) {
+            setTimeout(() => {
+                console.log('Attempting to recover from connection error...');
+                cleanupWebRTC();
+                setupWebRTC();
+            }, 2000);
+        }
     };
 
     dataChannel.onmessage = (event) => {
         try {
             const message = JSON.parse(event.data);
-            console.log('Received message:', message); // Log all messages
+            console.log('Received message:', message);
+            
+            // Handle errors without throwing
+            if (message.type === 'error') {
+                console.error('Received error message:', message.error);
+                logError(message.error);
+                return;
+            }
+            
             handleRealtimeEvent(message);
         } catch (error) {
-            logError('Failed to parse message: ' + error);
+            console.error('Failed to parse message:', error);
+            logError('Failed to process message');
         }
     };
+}
+
+// Utility function to scroll transcript to bottom
+function scrollToBottom(smooth = true) {
+    transcript.scrollTo({
+        top: transcript.scrollHeight,
+        behavior: smooth ? 'smooth' : 'auto'
+    });
+}
+
+// Function to handle web search
+async function handleWebSearch(args) {
+    try {
+        // Add a status message that we're searching
+        addMessageToTranscript('Searching the web...', false, 'status');
+        
+        const searchResult = await performWebSearch(args.query, args.recency);
+        
+        // Display the search results in the transcript
+        addMessageToTranscript(searchResult.text, false);
+        
+        // Add citations if available
+        if (searchResult.citations?.length > 0) {
+            const citationsContainer = document.createElement('div');
+            citationsContainer.className = 'citations';
+            citationsContainer.innerHTML = searchResult.citations
+                .map(citation => `<a href="${citation.url}" target="_blank">[${citation.number}] ${citation.title}</a>`)
+                .join('<br>');
+            transcript.appendChild(citationsContainer);
+            scrollToBottom();
+        }
+
+        // Send the results back to the agent using only supported fields
+        sendEvent({
+            type: 'response.create',
+            response: {
+                instructions: searchResult.text,
+                voice: selectedVoice
+            }
+        });
+
+    } catch (error) {
+        console.error('Error in web search:', error);
+        addMessageToTranscript('Failed to search the web. Please try again.', false, 'status');
+        
+        // Inform the agent about the error using only supported fields
+        sendEvent({
+            type: 'response.create',
+            response: {
+                instructions: 'I apologize, but I encountered an error while searching the web. Could you please try your request again?',
+                voice: selectedVoice
+            }
+        });
+    }
+}
+
+// Function to perform web search
+async function performWebSearch(query, recency) {
+    const loadingContainer = document.createElement('div');
+    loadingContainer.className = 'loading-container';
+    loadingContainer.innerHTML = `
+        <div class="loading-spinner"></div>
+        <div class="loading-text">Searching the web...</div>
+    `;
+    transcript.appendChild(loadingContainer);
+    transcript.scrollTop = transcript.scrollHeight;
+
+    try {
+        console.log('Performing web search:', { query, recency });
+        const response = await fetch(`${SERVER_URL}/search-web`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ query, recency })
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || 'Failed to search web');
+        }
+
+        const data = await response.json();
+        console.log('Search results:', data);
+        return data;
+    } catch (error) {
+        console.error('Error searching web:', error);
+        throw error;
+    } finally {
+        loadingContainer?.remove();
+    }
 } 
