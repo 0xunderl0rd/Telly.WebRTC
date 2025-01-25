@@ -25,7 +25,8 @@ let customInstructions = null; // Store custom instructions
 let messageBuffer = {
     text: '',
     timeout: null,
-    functionCall: null  // Add function call tracking
+    functionCall: null,
+    currentContainer: null  // Track current message container
 };
 
 // Add image state tracking
@@ -124,20 +125,27 @@ function logError(error) {
 }
 
 function addMessageToTranscript(message, isUser = false, type = 'text') {
-    if (!message) return; // Don't add empty messages
+    if (!message) return;
     
-    // Create container for proper message flow
-    const container = document.createElement('div');
-    container.className = 'message-container';
-    
+    // For status messages, always create a new container
     if (type === 'status') {
-        // System status messages
+        const container = document.createElement('div');
+        container.className = 'message-container';
         const messageDiv = document.createElement('div');
         messageDiv.className = 'system-message';
         messageDiv.textContent = message;
         container.appendChild(messageDiv);
-    } else {
-        // User or agent messages
+        transcript.appendChild(container);
+        transcript.scrollTop = transcript.scrollHeight;
+        return;
+    }
+
+    // For regular messages, check if we should create a new container or use existing
+    if (!messageBuffer.currentContainer || lastMessageRole !== (isUser ? 'user' : 'assistant')) {
+        // Create new container for new speaker or first message
+        const container = document.createElement('div');
+        container.className = 'message-container';
+        
         const messageDiv = document.createElement('div');
         messageDiv.className = `message ${isUser ? 'user-message' : 'agent-message'}`;
         
@@ -148,210 +156,30 @@ function addMessageToTranscript(message, isUser = false, type = 'text') {
         roleSpan.style.fontWeight = 'bold';
         messageDiv.appendChild(roleSpan);
         
-        // Add message text
+        // Add text span
         const textSpan = document.createElement('span');
+        textSpan.className = 'message-text';
         textSpan.textContent = message;
         messageDiv.appendChild(textSpan);
         
         container.appendChild(messageDiv);
         
-        // Add a clear div to maintain proper flow
+        // Add clear div
         const clearDiv = document.createElement('div');
         clearDiv.className = 'clear-both';
         container.appendChild(clearDiv);
+        
+        transcript.appendChild(container);
+        messageBuffer.currentContainer = container;
+    } else {
+        // Update existing container's text
+        const textSpan = messageBuffer.currentContainer.querySelector('.message-text');
+        if (textSpan) {
+            textSpan.textContent += message;
+        }
     }
     
-    transcript.appendChild(container);
     transcript.scrollTop = transcript.scrollHeight;
-}
-
-// Audio Visualization
-function setupAudioMeter() {
-    if (!audioContext) {
-        audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    }
-    
-    const mediaStreamSource = audioContext.createMediaStreamSource(audioStream);
-    const analyser = audioContext.createAnalyser();
-    analyser.fftSize = 256;
-    
-    mediaStreamSource.connect(analyser);
-    
-    const bufferLength = analyser.frequencyBinCount;
-    const dataArray = new Uint8Array(bufferLength);
-    
-    function updateMeter() {
-        if (!isConnected) return;
-        
-        analyser.getByteFrequencyData(dataArray);
-        let sum = 0;
-        for (let i = 0; i < bufferLength; i++) {
-            sum += dataArray[i];
-        }
-        const average = sum / bufferLength;
-        
-        // Update status with audio level indicator
-        const level = '█'.repeat(Math.floor(average / 10));
-        updateStatus(`Connected | Audio Level: ${level}`);
-        
-        requestAnimationFrame(updateMeter);
-    }
-    
-    updateMeter();
-}
-
-// WebRTC Setup
-async function setupWebRTC() {
-    try {
-        updateStatus('Initializing...');
-        addMessageToTranscript('Initializing connection...', false, 'status');
-
-        // Get ephemeral token from our server with selected voice and custom instructions
-        const params = new URLSearchParams({
-            voice: selectedVoice,
-            ...(customInstructions && { instructions: customInstructions })
-        });
-        
-        const tokenResponse = await fetch(`${SERVER_URL}/session?${params}`);
-        if (!tokenResponse.ok) {
-            const errorData = await tokenResponse.json();
-            throw new Error(`Failed to get session token: ${errorData.error || tokenResponse.statusText}`);
-        }
-        const sessionData = await tokenResponse.json();
-        const ephemeralKey = sessionData.client_secret.value;
-        addMessageToTranscript('Session token obtained', false, 'status');
-
-        // Request microphone access with specific constraints
-        audioStream = await navigator.mediaDevices.getUserMedia({ 
-            audio: {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true,
-                sampleRate: 48000,
-                channelCount: 1
-            } 
-        });
-        updateStatus('Microphone access granted');
-        addMessageToTranscript('Microphone access granted', false, 'status');
-
-        // Create peer connection
-        peerConnection = new RTCPeerConnection({
-            iceServers: [
-                { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' }
-            ]
-        });
-
-        // Set up audio playback with specific settings
-        const audioEl = document.createElement('audio');
-        audioEl.autoplay = true;
-        audioEl.volume = 1.0;
-        document.body.appendChild(audioEl);
-        
-        // Handle incoming audio stream
-        peerConnection.ontrack = (event) => {
-            console.log('Received audio track:', event.streams[0]);
-            audioEl.srcObject = event.streams[0];
-            addMessageToTranscript('Receiving audio stream', false, 'status');
-        };
-
-        // Add local audio track with specific settings
-        const audioTrack = audioStream.getAudioTracks()[0];
-        if (audioTrack) {
-            console.log('Adding audio track:', audioTrack.getSettings());
-            peerConnection.addTrack(audioTrack, audioStream);
-        }
-
-        // Setup audio visualization
-        setupAudioMeter();
-
-        // Create data channel for events
-        dataChannel = peerConnection.createDataChannel('oai-events', {
-            ordered: true
-        });
-        setupDataChannelHandlers();
-
-        // Create and set local description with specific audio settings
-        const offer = await peerConnection.createOffer({
-            offerToReceiveAudio: true,
-            voiceActivityDetection: true
-        });
-        await peerConnection.setLocalDescription(offer);
-        addMessageToTranscript('Local description set', false, 'status');
-
-        // Send offer to OpenAI with input audio transcription enabled and selected voice
-        const sdpResponse = await fetch(`${OPENAI_REALTIME_URL}?model=${MODEL}`, {
-            method: 'POST',
-            body: offer.sdp,
-            headers: {
-                'Authorization': `Bearer ${ephemeralKey}`,
-                'Content-Type': 'application/sdp',
-                'OpenAI-Beta': 'realtime'
-            },
-            // Add input audio transcription configuration and voice selection
-            query: {
-                input_audio_transcription: {
-                    model: 'whisper-1'
-                },
-                voice: selectedVoice
-            }
-        });
-
-        if (!sdpResponse.ok) {
-            throw new Error('Failed to get SDP answer');
-        }
-
-        // Set remote description
-        const answer = {
-            type: 'answer',
-            sdp: await sdpResponse.text()
-        };
-        await peerConnection.setRemoteDescription(answer);
-        addMessageToTranscript('Remote description set', false, 'status');
-
-        // Update UI state
-        isConnected = true;
-        connectBtn.textContent = 'Disconnect';
-        updateStatus(`Connected (${selectedVoice})`);
-
-    } catch (error) {
-        logError(error);
-        cleanupWebRTC();
-    }
-}
-
-function setupDataChannelHandlers() {
-    dataChannel.onopen = () => {
-        updateStatus('Connected');
-        addMessageToTranscript('Ready to chat', false, 'status');
-        
-        // Send initial prompt with detailed instructions
-        sendEvent({
-            type: 'response.create',
-            response: {
-                modalities: ['text', 'audio'],
-            }
-        });
-    };
-
-    dataChannel.onclose = () => {
-        updateStatus('Disconnected');
-        addMessageToTranscript('Connection closed', false, 'status');
-    };
-
-    dataChannel.onerror = (error) => {
-        logError('Data channel error: ' + error);
-    };
-
-    dataChannel.onmessage = (event) => {
-        try {
-            const message = JSON.parse(event.data);
-            console.log('Received message:', message); // Log all messages
-            handleRealtimeEvent(message);
-        } catch (error) {
-            logError('Failed to parse message: ' + error);
-        }
-    };
 }
 
 function flushMessageBuffer() {
@@ -422,7 +250,11 @@ function handleRealtimeEvent(event) {
         case 'response.created':
             updateStatus('Assistant is responding...');
             messageBuffer.text = '';
-            lastMessageRole = 'assistant'; // Track that assistant is speaking
+            // Only reset container if it's a new conversation turn
+            if (lastMessageRole !== 'assistant') {
+                messageBuffer.currentContainer = null;
+                lastMessageRole = 'assistant';
+            }
             if (messageBuffer.timeout) {
                 clearTimeout(messageBuffer.timeout);
                 messageBuffer.timeout = null;
@@ -430,18 +262,17 @@ function handleRealtimeEvent(event) {
             break;
             
         case 'response.done':
-            // Final cleanup of any remaining text
-            flushMessageBuffer();
+            if (messageBuffer.timeout) {
+                clearTimeout(messageBuffer.timeout);
+                messageBuffer.timeout = null;
+            }
+            messageBuffer.text = '';
+            messageBuffer.currentContainer = null;
             updateStatus('Connected');
             break;
 
         case 'response.audio_transcript.delta':
             if (event.delta) {
-                // Reset function call state to ensure clean transcript handling
-                if (messageBuffer.functionCall) {
-                    messageBuffer.functionCall = null;
-                }
-                
                 messageBuffer.text += event.delta;
                 
                 // Clear any existing timeout
@@ -449,19 +280,23 @@ function handleRealtimeEvent(event) {
                     clearTimeout(messageBuffer.timeout);
                 }
                 
-                // Check for natural breakpoints
-                const hasNaturalBreak = /[.!?]\s*$/.test(messageBuffer.text) || 
-                                      /[,;:]\s*$/.test(messageBuffer.text) ||
-                                      messageBuffer.text.length > 100;
-                
-                if (hasNaturalBreak) {
-                    flushMessageBuffer();
+                // Create or update the message container
+                if (!messageBuffer.currentContainer) {
+                    addMessageToTranscript(messageBuffer.text, false);
                 } else {
-                    // Set a timeout to flush the buffer if no new content arrives
-                    messageBuffer.timeout = setTimeout(() => {
-                        flushMessageBuffer();
-                    }, 1000);
+                    const textSpan = messageBuffer.currentContainer.querySelector('.message-text');
+                    if (textSpan) {
+                        textSpan.textContent = messageBuffer.text;
+                    }
                 }
+                
+                // Set a timeout just for very long pauses
+                messageBuffer.timeout = setTimeout(() => {
+                    messageBuffer.text = '';
+                    messageBuffer.currentContainer = null;
+                }, 3000); // Only reset after 3 seconds of silence
+                
+                transcript.scrollTop = transcript.scrollHeight;
             }
             break;
 
@@ -698,4 +533,193 @@ async function generateImage(prompt) {
         console.error('Error generating image:', error);
         addMessageToTranscript('Failed to generate image: ' + error.message, false, 'status');
     }
+}
+
+// Audio Visualization
+function setupAudioMeter() {
+    if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    
+    const mediaStreamSource = audioContext.createMediaStreamSource(audioStream);
+    const analyser = audioContext.createAnalyser();
+    analyser.fftSize = 256;
+    
+    mediaStreamSource.connect(analyser);
+    
+    const bufferLength = analyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+    
+    function updateMeter() {
+        if (!isConnected) return;
+        
+        analyser.getByteFrequencyData(dataArray);
+        let sum = 0;
+        for (let i = 0; i < bufferLength; i++) {
+            sum += dataArray[i];
+        }
+        const average = sum / bufferLength;
+        
+        // Update status with audio level indicator
+        const level = '█'.repeat(Math.floor(average / 10));
+        updateStatus(`Connected | Audio Level: ${level}`);
+        
+        requestAnimationFrame(updateMeter);
+    }
+    
+    updateMeter();
+}
+
+// WebRTC Setup
+async function setupWebRTC() {
+    try {
+        updateStatus('Initializing...');
+        addMessageToTranscript('Initializing connection...', false, 'status');
+
+        // Get ephemeral token from our server with selected voice and custom instructions
+        const params = new URLSearchParams({
+            voice: selectedVoice,
+            ...(customInstructions && { instructions: customInstructions })
+        });
+        
+        const tokenResponse = await fetch(`${SERVER_URL}/session?${params}`);
+        if (!tokenResponse.ok) {
+            const errorData = await tokenResponse.json();
+            throw new Error(`Failed to get session token: ${errorData.error || tokenResponse.statusText}`);
+        }
+        const sessionData = await tokenResponse.json();
+        const ephemeralKey = sessionData.client_secret.value;
+        addMessageToTranscript('Session token obtained', false, 'status');
+
+        // Request microphone access with specific constraints
+        audioStream = await navigator.mediaDevices.getUserMedia({ 
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+                sampleRate: 48000,
+                channelCount: 1
+            } 
+        });
+        updateStatus('Microphone access granted');
+        addMessageToTranscript('Microphone access granted', false, 'status');
+
+        // Create peer connection
+        peerConnection = new RTCPeerConnection({
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ]
+        });
+
+        // Set up audio playback with specific settings
+        const audioEl = document.createElement('audio');
+        audioEl.autoplay = true;
+        audioEl.volume = 1.0;
+        document.body.appendChild(audioEl);
+        
+        // Handle incoming audio stream
+        peerConnection.ontrack = (event) => {
+            console.log('Received audio track:', event.streams[0]);
+            audioEl.srcObject = event.streams[0];
+            addMessageToTranscript('Receiving audio stream', false, 'status');
+        };
+
+        // Add local audio track with specific settings
+        const audioTrack = audioStream.getAudioTracks()[0];
+        if (audioTrack) {
+            console.log('Adding audio track:', audioTrack.getSettings());
+            peerConnection.addTrack(audioTrack, audioStream);
+        }
+
+        // Setup audio visualization
+        setupAudioMeter();
+
+        // Create data channel for events
+        dataChannel = peerConnection.createDataChannel('oai-events', {
+            ordered: true
+        });
+        setupDataChannelHandlers();
+
+        // Create and set local description with specific audio settings
+        const offer = await peerConnection.createOffer({
+            offerToReceiveAudio: true,
+            voiceActivityDetection: true
+        });
+        await peerConnection.setLocalDescription(offer);
+        addMessageToTranscript('Local description set', false, 'status');
+
+        // Send offer to OpenAI with input audio transcription enabled and selected voice
+        const sdpResponse = await fetch(`${OPENAI_REALTIME_URL}?model=${MODEL}`, {
+            method: 'POST',
+            body: offer.sdp,
+            headers: {
+                'Authorization': `Bearer ${ephemeralKey}`,
+                'Content-Type': 'application/sdp',
+                'OpenAI-Beta': 'realtime'
+            },
+            // Add input audio transcription configuration and voice selection
+            query: {
+                input_audio_transcription: {
+                    model: 'whisper-1'
+                },
+                voice: selectedVoice
+            }
+        });
+
+        if (!sdpResponse.ok) {
+            throw new Error('Failed to get SDP answer');
+        }
+
+        // Set remote description
+        const answer = {
+            type: 'answer',
+            sdp: await sdpResponse.text()
+        };
+        await peerConnection.setRemoteDescription(answer);
+        addMessageToTranscript('Remote description set', false, 'status');
+
+        // Update UI state
+        isConnected = true;
+        connectBtn.textContent = 'Disconnect';
+        updateStatus(`Connected (${selectedVoice})`);
+
+    } catch (error) {
+        logError(error);
+        cleanupWebRTC();
+    }
+}
+
+function setupDataChannelHandlers() {
+    dataChannel.onopen = () => {
+        updateStatus('Connected');
+        addMessageToTranscript('Ready to chat', false, 'status');
+        
+        // Send initial prompt with detailed instructions
+        sendEvent({
+            type: 'response.create',
+            response: {
+                modalities: ['text', 'audio'],
+            }
+        });
+    };
+
+    dataChannel.onclose = () => {
+        updateStatus('Disconnected');
+        addMessageToTranscript('Connection closed', false, 'status');
+    };
+
+    dataChannel.onerror = (error) => {
+        logError('Data channel error: ' + error);
+    };
+
+    dataChannel.onmessage = (event) => {
+        try {
+            const message = JSON.parse(event.data);
+            console.log('Received message:', message); // Log all messages
+            handleRealtimeEvent(message);
+        } catch (error) {
+            logError('Failed to parse message: ' + error);
+        }
+    };
 } 
