@@ -4,6 +4,12 @@ const transcript = document.getElementById('transcript');
 const status = document.getElementById('status');
 const imageUpload = document.getElementById('imageUpload');
 const voiceSelect = document.getElementById('voiceSelect');
+const instructionsBtn = document.getElementById('instructionsBtn');
+const instructionsModal = document.getElementById('instructionsModal');
+const instructionsText = document.getElementById('instructionsText');
+const saveInstructionsBtn = document.getElementById('saveInstructions');
+const resetInstructionsBtn = document.getElementById('resetInstructions');
+const closeModalBtn = document.querySelector('.close');
 
 // State
 let isConnected = false;
@@ -15,6 +21,7 @@ let audioMeter = null;
 let currentAssistantMessage = '';
 let lastMessageRole = null;
 let selectedVoice = 'sage'; // Default voice
+let customInstructions = null; // Store custom instructions
 let messageBuffer = {
     text: '',
     timeout: null,
@@ -41,6 +48,68 @@ voiceSelect.addEventListener('change', (event) => {
         addMessageToTranscript(`Switching to ${selectedVoice} voice requires reconnecting...`, false, 'status');
     }
 });
+
+// Instructions Modal Handling
+async function fetchDefaultInstructions() {
+    try {
+        const response = await fetch(`${SERVER_URL}/default-instructions`);
+        if (!response.ok) throw new Error('Failed to fetch default instructions');
+        const data = await response.json();
+        return data.instructions;
+    } catch (error) {
+        console.error('Error fetching default instructions:', error);
+        return null;
+    }
+}
+
+// Initialize instructions when the page loads
+window.addEventListener('DOMContentLoaded', initializeInstructions);
+
+async function initializeInstructions() {
+    const defaultInstructions = await fetchDefaultInstructions();
+    if (defaultInstructions) {
+        instructionsText.value = customInstructions || defaultInstructions;
+    }
+}
+
+instructionsBtn.onclick = async () => {
+    // If there's no text in the textarea, try to load instructions
+    if (!instructionsText.value) {
+        const defaultInstructions = await fetchDefaultInstructions();
+        if (defaultInstructions) {
+            instructionsText.value = customInstructions || defaultInstructions;
+        }
+    }
+    instructionsModal.style.display = 'block';
+};
+
+closeModalBtn.onclick = () => {
+    instructionsModal.style.display = 'none';
+};
+
+window.onclick = (event) => {
+    if (event.target === instructionsModal) {
+        instructionsModal.style.display = 'none';
+    }
+};
+
+saveInstructionsBtn.onclick = () => {
+    const newInstructions = instructionsText.value.trim();
+    if (newInstructions) {
+        customInstructions = newInstructions;
+        addMessageToTranscript('Instructions updated. Reconnect to apply changes.', false, 'status');
+    }
+    instructionsModal.style.display = 'none';
+};
+
+resetInstructionsBtn.onclick = async () => {
+    const defaultInstructions = await fetchDefaultInstructions();
+    if (defaultInstructions) {
+        instructionsText.value = defaultInstructions;
+        customInstructions = null;
+        addMessageToTranscript('Instructions reset to default. Reconnect to apply changes.', false, 'status');
+    }
+};
 
 // Utility Functions
 function updateStatus(message, isError = false) {
@@ -137,8 +206,13 @@ async function setupWebRTC() {
         updateStatus('Initializing...');
         addMessageToTranscript('Initializing connection...', false, 'status');
 
-        // Get ephemeral token from our server with selected voice
-        const tokenResponse = await fetch(`${SERVER_URL}/session?voice=${encodeURIComponent(selectedVoice)}`);
+        // Get ephemeral token from our server with selected voice and custom instructions
+        const params = new URLSearchParams({
+            voice: selectedVoice,
+            ...(customInstructions && { instructions: customInstructions })
+        });
+        
+        const tokenResponse = await fetch(`${SERVER_URL}/session?${params}`);
         if (!tokenResponse.ok) {
             const errorData = await tokenResponse.json();
             throw new Error(`Failed to get session token: ${errorData.error || tokenResponse.statusText}`);

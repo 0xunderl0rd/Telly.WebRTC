@@ -172,6 +172,106 @@
             from { opacity: 0; }
             to { opacity: 1; }
         }
+        .instructions-button {
+            background-color: #6c757d;
+        }
+        .instructions-button:hover {
+            background-color: #5a6268;
+        }
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            overflow: auto;
+            background-color: rgba(0,0,0,0.4);
+        }
+        .modal-content {
+            background-color: #fefefe;
+            margin: 5% auto;
+            padding: 20px;
+            border: 1px solid #888;
+            width: 90%;
+            max-width: 800px;
+            border-radius: 8px;
+            max-height: 90vh;
+            display: flex;
+            flex-direction: column;
+        }
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            flex-shrink: 0;
+        }
+        .modal-header h2 {
+            margin: 0;
+        }
+        .close {
+            color: #aaaaaa;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+        }
+        .close:hover,
+        .close:focus {
+            color: #000;
+            text-decoration: none;
+        }
+        .modal-body {
+            margin-bottom: 20px;
+            flex-grow: 1;
+            min-height: 0;
+            display: flex;
+        }
+        #instructionsText {
+            width: 100%;
+            min-height: 400px;
+            padding: 12px;
+            font-family: monospace;
+            font-size: 14px;
+            line-height: 1.5;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            resize: vertical;
+            white-space: pre-wrap;
+        }
+        #instructionsText:focus {
+            outline: none;
+            border-color: #007bff;
+            box-shadow: 0 0 0 2px rgba(0,123,255,0.25);
+        }
+        .modal-footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .save-button {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        .save-button:hover {
+            background-color: #0056b3;
+        }
+        .reset-button {
+            background-color: #6c757d;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        .reset-button:hover {
+            background-color: #5a6268;
+        }
     </style>
 </head>
 <body>
@@ -189,10 +289,29 @@
             <option value="shimmer">Shimmer</option>
             <option value="verse">Verse</option>
         </select>
+        <button id="instructionsBtn" class="instructions-button">Instructions</button>
         <button id="uploadTrigger" class="upload-button" onclick="document.getElementById('imageUpload').click()">
             Upload Image
         </button>
     </div>
+
+    <!-- Instructions Modal -->
+    <div id="instructionsModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Agent Instructions</h2>
+                <span class="close">&times;</span>
+            </div>
+            <div class="modal-body">
+                <textarea id="instructionsText" rows="20"></textarea>
+            </div>
+            <div class="modal-footer">
+                <button id="saveInstructions" class="save-button">Save</button>
+                <button id="resetInstructions" class="reset-button">Reset to Default</button>
+            </div>
+        </div>
+    </div>
+
     <div id="transcript"></div>
     <input type="file" id="imageUpload" accept="image/*">
     
