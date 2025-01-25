@@ -174,10 +174,16 @@
             to { opacity: 1; }
         }
         .instructions-button {
-            background-color: #6c757d;
+            background-color: #28a745;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 10px;
         }
         .instructions-button:hover {
-            background-color: #5a6268;
+            background-color: #218838;
         }
         .modal {
             display: none;
@@ -305,9 +311,6 @@
             <option value="verse">Verse</option>
         </select>
         <button id="instructionsBtn" class="instructions-button">Instructions</button>
-        <button id="uploadTrigger" class="upload-button" onclick="document.getElementById('imageUpload').click()">
-            Upload Image
-        </button>
     </div>
 
     <!-- Instructions Modal -->

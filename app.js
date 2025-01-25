@@ -135,8 +135,14 @@ function addMessageToTranscript(message, isUser = false, type = 'text') {
         messageDiv.className = 'system-message';
         messageDiv.textContent = message;
         container.appendChild(messageDiv);
+        
+        // Add clear div
+        const clearDiv = document.createElement('div');
+        clearDiv.className = 'clear-both';
+        container.appendChild(clearDiv);
+        
         transcript.appendChild(container);
-        transcript.scrollTop = transcript.scrollHeight;
+        scrollToBottom();
         return;
     }
 
@@ -175,11 +181,19 @@ function addMessageToTranscript(message, isUser = false, type = 'text') {
         // Update existing container's text
         const textSpan = messageBuffer.currentContainer.querySelector('.message-text');
         if (textSpan) {
-            textSpan.textContent += message;
+            // Ensure we're not losing any text by checking if the new message contains the old one
+            const existingText = textSpan.textContent;
+            if (!message.includes(existingText)) {
+                // If new message doesn't contain old message, append the delta
+                textSpan.textContent = message;
+            } else {
+                // Otherwise use the new message as is
+                textSpan.textContent = message;
+            }
         }
     }
     
-    transcript.scrollTop = transcript.scrollHeight;
+    scrollToBottom();
 }
 
 function flushMessageBuffer() {
@@ -199,7 +213,6 @@ function handleRealtimeEvent(event) {
     // Handle errors first
     if (event.type === 'error') {
         console.error('Error event:', event.error);
-        // Don't throw errors, just log them
         logError(event.error);
         
         // Only attempt reconnection for connection-related errors
@@ -243,18 +256,19 @@ function handleRealtimeEvent(event) {
         case 'conversation.item.created':
             console.log('Conversation item created:', event.item);
             if (event.item?.type === 'message') {
-                // Reset message buffer when switching speakers
-                if (lastMessageRole !== event.item.role) {
-                    flushMessageBuffer();
-                    lastMessageRole = event.item.role;
+                // Only reset buffer when switching to user role
+                if (lastMessageRole !== event.item.role && event.item.role === 'user') {
+                    messageBuffer.text = '';
+                    messageBuffer.currentContainer = null;
                 }
+                lastMessageRole = event.item.role;
 
                 // Handle user transcripts
                 if (event.item.role === 'user') {
-                    // Check all content parts for text
                     const textContent = event.item.content?.find(c => c.type === 'text');
                     if (textContent?.text) {
                         console.log('User speech transcript:', textContent.text);
+                        messageBuffer.text = textContent.text;
                         addMessageToTranscript(textContent.text, true);
                     }
                 }
@@ -263,8 +277,7 @@ function handleRealtimeEvent(event) {
             
         case 'response.created':
             updateStatus('Assistant is responding...');
-            messageBuffer.text = '';
-            // Only reset container if it's a new conversation turn
+            // Don't reset text buffer on new response, just the container if needed
             if (lastMessageRole !== 'assistant') {
                 messageBuffer.currentContainer = null;
                 lastMessageRole = 'assistant';
@@ -276,17 +289,22 @@ function handleRealtimeEvent(event) {
             break;
             
         case 'response.done':
+            // Ensure any remaining text is displayed
+            if (messageBuffer.text.trim()) {
+                addMessageToTranscript(messageBuffer.text.trim(), false);
+            }
             if (messageBuffer.timeout) {
                 clearTimeout(messageBuffer.timeout);
                 messageBuffer.timeout = null;
             }
-            messageBuffer.text = '';
+            // Only reset container, keep the text for context
             messageBuffer.currentContainer = null;
             updateStatus('Connected');
             break;
 
         case 'response.audio_transcript.delta':
             if (event.delta) {
+                // Always append new delta to the buffer
                 messageBuffer.text += event.delta;
                 
                 // Clear any existing timeout
@@ -294,23 +312,15 @@ function handleRealtimeEvent(event) {
                     clearTimeout(messageBuffer.timeout);
                 }
                 
-                // Create or update the message container
-                if (!messageBuffer.currentContainer) {
-                    addMessageToTranscript(messageBuffer.text, false);
-                } else {
-                    const textSpan = messageBuffer.currentContainer.querySelector('.message-text');
-                    if (textSpan) {
-                        textSpan.textContent = messageBuffer.text;
-                    }
-                }
+                addMessageToTranscript(messageBuffer.text, false);
                 
                 // Set a timeout just for very long pauses
                 messageBuffer.timeout = setTimeout(() => {
-                    messageBuffer.text = '';
+                    // Don't clear the text buffer, just mark container as complete
                     messageBuffer.currentContainer = null;
-                }, 3000); // Only reset after 3 seconds of silence
+                }, 3000);
                 
-                transcript.scrollTop = transcript.scrollHeight;
+                scrollToBottom();
             }
             break;
 
@@ -496,7 +506,7 @@ async function generateImage(prompt) {
     try {
         // Add loading indicator
         const loadingContainer = document.createElement('div');
-        loadingContainer.className = 'message agent-message';
+        loadingContainer.className = 'message-container';
         loadingContainer.innerHTML = `
             <div class="loading-container">
                 <div class="loading-spinner"></div>
@@ -504,7 +514,7 @@ async function generateImage(prompt) {
             </div>
         `;
         transcript.appendChild(loadingContainer);
-        transcript.scrollTop = transcript.scrollHeight;
+        scrollToBottom();
 
         // Make API call to our server endpoint
         const response = await fetch(`${SERVER_URL}/generate-image`, {
@@ -524,20 +534,30 @@ async function generateImage(prompt) {
         // Remove loading indicator
         loadingContainer.remove();
 
-        // Create image container
+        // Create image container with proper message container structure
         const imageContainer = document.createElement('div');
-        imageContainer.className = 'message agent-message';
+        imageContainer.className = 'message-container';
+        
+        const messageDiv = document.createElement('div');
+        messageDiv.className = 'message agent-message';
         
         // Create and add image
         const img = document.createElement('img');
         img.src = data.url;
         img.alt = prompt;
         img.className = 'generated-image';
-        imageContainer.appendChild(img);
+        messageDiv.appendChild(img);
+        
+        imageContainer.appendChild(messageDiv);
+        
+        // Add clear div after the image
+        const clearDiv = document.createElement('div');
+        clearDiv.className = 'clear-both';
+        imageContainer.appendChild(clearDiv);
         
         // Add to transcript
         transcript.appendChild(imageContainer);
-        transcript.scrollTop = transcript.scrollHeight;
+        scrollToBottom();
 
         // Update last image context
         lastImageContext = {
