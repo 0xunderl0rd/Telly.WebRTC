@@ -36,6 +36,9 @@ let lastImageContext = {
     timestamp: null
 };
 
+// Add this near the top with other state variables
+let activeFunctionCalls = new Map();
+
 // Constants
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB in bytes
 const SERVER_URL = 'http://localhost:3000';
@@ -254,7 +257,12 @@ function handleRealtimeEvent(event) {
             break;
             
         case 'conversation.item.created':
-            console.log('Conversation item created:', event.item);
+            console.log('Conversation item created:', {
+                type: event.item?.type,
+                role: event.item?.role,
+                content: event.item?.content,
+                name: event.item?.name
+            });
             if (event.item?.type === 'message') {
                 // Only reset buffer when switching to user role
                 if (lastMessageRole !== event.item.role && event.item.role === 'user') {
@@ -271,6 +279,8 @@ function handleRealtimeEvent(event) {
                         messageBuffer.text = textContent.text;
                         addMessageToTranscript(textContent.text, true);
                     }
+                } else if (event.item.role === 'function') {
+                    console.log('Function response received:', event.item);
                 }
             }
             break;
@@ -286,6 +296,13 @@ function handleRealtimeEvent(event) {
                 clearTimeout(messageBuffer.timeout);
                 messageBuffer.timeout = null;
             }
+            // Log the response creation
+            console.log('New response created:', {
+                id: event.response.id,
+                modalities: event.response.modalities,
+                status: event.response.status,
+                type: event.type
+            });
             break;
             
         case 'response.done':
@@ -299,17 +316,42 @@ function handleRealtimeEvent(event) {
             }
             // Only reset container, keep the text for context
             messageBuffer.currentContainer = null;
+            
+            // Log response details for debugging
+            console.log('Response completed:', {
+                status: event.response.status,
+                output: event.response.output,
+                usage: event.response.usage,
+                type: event.type
+            });
+            
+            // Check if this was a file content response
+            const fileResponse = event.response.output?.find(item => 
+                item.type === 'message' && 
+                item.content?.some(c => c.type === 'text' && c.text.includes('content from'))
+            );
+            
+            if (fileResponse) {
+                console.log('File content was processed by assistant');
+            }
+            
             updateStatus('Connected');
             break;
 
         case 'response.audio_transcript.delta':
             if (event.delta) {
+                console.log('Received transcript delta:', event.delta);
                 // Always append new delta to the buffer
                 messageBuffer.text += event.delta;
                 
                 // Clear any existing timeout
                 if (messageBuffer.timeout) {
                     clearTimeout(messageBuffer.timeout);
+                }
+                
+                // Log the accumulated response
+                if (event.delta.includes('content from') || event.delta.includes('documentation')) {
+                    console.log('Assistant is processing file content:', messageBuffer.text);
                 }
                 
                 addMessageToTranscript(messageBuffer.text, false);
@@ -358,15 +400,16 @@ function handleRealtimeEvent(event) {
                 delta: event.delta,
                 current_buffer: messageBuffer.functionCall?.arguments
             });
-            // Accumulate function call arguments
-            if (!messageBuffer.functionCall) {
-                messageBuffer.functionCall = {
-                    name: event.call_id,
+            // Track the function call
+            if (!activeFunctionCalls.has(event.call_id)) {
+                activeFunctionCalls.set(event.call_id, {
+                    name: event.name,
                     arguments: ''
-                };
+                });
             }
             if (event.delta) {
-                messageBuffer.functionCall.arguments += event.delta;
+                const call = activeFunctionCalls.get(event.call_id);
+                call.arguments += event.delta;
             }
             break;
 
@@ -381,6 +424,12 @@ function handleRealtimeEvent(event) {
                 const args = JSON.parse(event.arguments);
                 console.log('Parsed function arguments:', args);
                 
+                // Store function call info
+                activeFunctionCalls.set(event.call_id, {
+                    name: event.name,
+                    arguments: args
+                });
+                
                 if (event.name === 'generate_image' && args.prompt) {
                     generateImage(args.prompt);
                 } else if (event.name === 'search_web') {
@@ -388,14 +437,16 @@ function handleRealtimeEvent(event) {
                         console.error('Error in web search:', error);
                         addMessageToTranscript('Failed to complete the web search. Please try again.', false, 'status');
                     });
+                } else if (event.name === 'retrieve_file') {
+                    handleFileRetrieval(event.call_id, args).catch(error => {
+                        console.error('Error in file retrieval:', error);
+                        addMessageToTranscript('Failed to retrieve the documentation. Please try again.', false, 'status');
+                    });
                 }
             } catch (error) {
                 console.error('Error parsing function arguments:', error);
                 addMessageToTranscript('Failed to process the request. Please try again.', false, 'status');
             }
-            
-            // Clear only the function call buffer, preserve other message state
-            messageBuffer.functionCall = null;
             break;
 
         case 'response.output_item.done':
@@ -870,5 +921,101 @@ async function performWebSearch(query, recency) {
         throw error;
     } finally {
         loadingContainer?.remove();
+    }
+}
+
+// Update the handleFileRetrieval function
+async function handleFileRetrieval(callId, args) {
+    try {
+        // Add a loading message
+        addMessageToTranscript('Retrieving information from Telly documentation...', false, 'status');
+        
+        // Use the full server URL
+        const response = await fetch(`${SERVER_URL}/api/files/${args.filename}`);
+        if (!response.ok) {
+            throw new Error(`Failed to retrieve file: ${response.statusText}`);
+        }
+        const data = await response.json();
+        
+        if (!data.success || !data.content) {
+            throw new Error('Invalid file content received');
+        }
+        
+        console.log('Successfully retrieved file content, sending to assistant');
+
+        // Create a conversation item with the file content as an assistant message
+        sendEvent({
+            type: 'conversation.item.create',
+            item: {
+                type: 'message',
+                role: 'assistant',
+                content: [
+                    {
+                        type: 'text',
+                        text: `Function retrieve_file was called with ${args.filename} and returned the following content:\n\n${data.content}`
+                    }
+                ]
+            }
+        });
+
+        // Wait a brief moment for the conversation item to be processed
+        await new Promise(resolve => setTimeout(resolve, 100));
+
+        // Create a new response for the assistant to process the content
+        sendEvent({
+            type: 'response.create',
+            response: {
+                modalities: ['text', 'audio'],
+                instructions: `Using the file content I just added to our conversation from ${args.filename}, provide a response that:
+1. Is concise and limited to 30 words unless the user specifically asked for more detail
+2. Maintains a competent and concise tone, helpful but not overly eager
+3. Incorporates specific details from the documentation
+4. Speaks quickly by default
+5. Never mentions technical details about how you retrieved or processed the information
+
+Remember to stay focused on answering the user's specific question without unnecessary elaboration.`,
+                voice: selectedVoice
+            }
+        });
+        
+        console.log('Sent file content and created response for processing');
+        
+        // Clean up the function call tracking
+        activeFunctionCalls.delete(callId);
+        
+    } catch (error) {
+        console.error('Error retrieving file:', error);
+        addMessageToTranscript('Failed to retrieve the documentation. Please try again.', false, 'status');
+        
+        // Send error as a conversation item
+        sendEvent({
+            type: 'conversation.item.create',
+            item: {
+                type: 'message',
+                role: 'assistant',
+                content: [
+                    {
+                        type: 'text',
+                        text: `Error retrieving file: ${error.message}`
+                    }
+                ]
+            }
+        });
+
+        // Wait a brief moment for the error item to be processed
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+        // Create error response
+        sendEvent({
+            type: 'response.create',
+            response: {
+                modalities: ['text', 'audio'],
+                instructions: `Maintain your concise and competent tone while informing the user that you encountered an error retrieving the documentation. Keep the response under 30 words and suggest they try their question again.`,
+                voice: selectedVoice
+            }
+        });
+        
+        // Clean up even on error
+        activeFunctionCalls.delete(callId);
     }
 } 

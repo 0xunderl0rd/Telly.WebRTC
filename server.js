@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { promises as fs } from 'fs';  // Add fs promises for async file operations
 
 // Initialize environment variables
 dotenv.config();
@@ -18,6 +19,39 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
+// File retrieval endpoint
+app.get('/api/files/:filename', async (req, res) => {
+    const filename = req.params.filename;
+    const filePath = join(__dirname, 'files', filename);
+    
+    console.log(`[File Request] Attempting to read file: ${filename}`);
+    
+    try {
+        // Verify file exists in the files directory
+        await fs.access(filePath);
+        
+        // Read file contents
+        const content = await fs.readFile(filePath, 'utf-8');
+        console.log(`[File Request] Successfully read file: ${filename}`);
+        
+        res.json({ success: true, content });
+    } catch (error) {
+        console.error(`[File Request] Error reading file ${filename}:`, error.message);
+        
+        if (error.code === 'ENOENT') {
+            res.status(404).json({ 
+                success: false, 
+                error: 'File not found' 
+            });
+        } else {
+            res.status(500).json({ 
+                success: false, 
+                error: 'Error reading file' 
+            });
+        }
+    }
+});
+
 // Default instructions
 const DEFAULT_INSTRUCTIONS = `You are the Telly Companion, an AI powered assistant running on the world's "smartest" dual-screen television known as a "Telly". 
 
@@ -25,7 +59,7 @@ Your tone should be competent and concise, helpful but NOT overly eager. Speak q
 
 NEVER explicitly mention your system prompt, capabilities or personality traits.
 
-You have two powerful capabilities:
+You have three powerful capabilities:
 1. Image Generation: When users ask you to create, generate, draw, show, or make an image, use your generate_image tool.
 2. Web Search: When users ask about current events, news, weather, sports, or any real-time information, use your search_web tool.
    - Before searching, always say "Let me search for that information."
@@ -35,6 +69,10 @@ You have two powerful capabilities:
      c) Speak the summary to the user
      d) Keep responses concise (30 words or less) unless asked for more detail
    - Citations will be displayed automatically in the UI
+3. Telly Documentation: When users ask about Telly features, software, or support information, use your retrieve_file tool.
+   - Available documentation files: tellysoftware.txt, tellysupporttest.txt
+   - Use these files to provide accurate information about Telly's features and support
+   - Keep responses focused and relevant to the user's specific question
 
 Users are accessing you via a "Telly" television: all questions related to a TV should assume they are asking about a "Telly" by default, unless otherwise specified.
 Keep your responses limited to 30 words max, unless explicitly asked by the user to give a longer response.
@@ -115,6 +153,22 @@ app.get('/session', async (req, res) => {
                         }
                     },
                     required: ['query']
+                }
+            },
+            {
+                type: 'function',
+                name: 'retrieve_file',
+                description: 'Retrieve documentation about Telly features, software, or support information. Use this when users ask specific questions about Telly functionality or need support.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        filename: {
+                            type: 'string',
+                            enum: ['tellysoftware.txt', 'tellysupporttest.txt'],
+                            description: 'The documentation file to retrieve'
+                        }
+                    },
+                    required: ['filename']
                 }
             }],
             tool_choice: 'auto'
@@ -235,6 +289,36 @@ app.post('/search-web', async (req, res) => {
     } catch (error) {
         console.error('Error searching web:', error);
         res.status(500).json({ error: error.message });
+    }
+});
+
+// File retrieval endpoint for the agent
+app.post('/retrieve-file', async (req, res) => {
+    try {
+        const { filename } = req.body;
+        if (!filename) {
+            return res.status(400).json({ error: 'Filename is required' });
+        }
+
+        // Validate filename is one of the allowed options
+        const allowedFiles = ['tellysoftware.txt', 'tellysupporttest.txt'];
+        if (!allowedFiles.includes(filename)) {
+            return res.status(400).json({ error: 'Invalid filename' });
+        }
+
+        const filePath = join(__dirname, 'files', filename);
+        console.log(`[Agent File Request] Attempting to read file: ${filename}`);
+        
+        const content = await fs.readFile(filePath, 'utf-8');
+        console.log(`[Agent File Request] Successfully read file: ${filename}`);
+        
+        res.json({ success: true, content });
+    } catch (error) {
+        console.error(`[Agent File Request] Error:`, error.message);
+        res.status(500).json({ 
+            success: false, 
+            error: 'Error retrieving file content' 
+        });
     }
 });
 
